@@ -1052,23 +1052,7 @@ class RemarkableClient:
             "tags": [],
             "textScale": 1,
         }
-        metadata = {
-            "createdTime": now,
-            "deleted": False,
-            "lastModified": now,
-            "lastOpened": now,
-            "lastOpenedPage": 0,
-            "metadatamodified": False,
-            "modified": False,
-            "new": False,
-            "parent": parent_id or "",
-            "pinned": False,
-            "source": "",
-            "synced": False,
-            "type": "DocumentType",
-            "version": 1,
-            "visibleName": name,
-        }
+        metadata = self._new_document_metadata(name, parent_id, now)
         pagedata = ("Blank\n" * page_count) if page_count else "\n"
 
         files = [
@@ -1090,6 +1074,63 @@ class RemarkableClient:
             doc_type="DocumentType",
             parent=parent_id or "",
         )
+
+    def create_notebook(self, name: str, text: str = "", parent_id: str = "") -> Document:
+        """Create a native notebook in the cloud and return it.
+
+        The notebook has one page, blank or seeded with typed text (paragraphs
+        split on newlines), built by the same helpers as the SSH
+        ``create_document`` path. Uploads ``.content``, ``.metadata`` and the
+        page's ``.rm`` blob, then adds the document to the root index.
+        """
+        from remarkable_mcp import notebooks as nb
+
+        doc_id = str(uuid.uuid4())
+        page_id = str(uuid.uuid4())
+        author_uuid = str(uuid.uuid4())
+        page_bytes = nb.page_rm_bytes(text or "", author_uuid=author_uuid)
+        content_json = nb.new_notebook_content([page_id], author_uuid)
+        metadata = self._new_document_metadata(name, parent_id, self._now_ms())
+
+        files = [
+            self._upload_file_blob(
+                json.dumps(content_json, sort_keys=True).encode("utf-8"), f"{doc_id}.content"
+            ),
+            self._upload_file_blob(
+                json.dumps(metadata, sort_keys=True).encode("utf-8"), f"{doc_id}.metadata"
+            ),
+            self._upload_file_blob(page_bytes, f"{doc_id}/{page_id}.rm"),
+        ]
+        new_entry = self._upload_doc_index(doc_id, files)
+        self._sync_root(lambda entries: entries + [new_entry])
+        return Document(
+            id=doc_id,
+            hash=new_entry["hash"],
+            name=name,
+            doc_type="DocumentType",
+            parent=parent_id or "",
+        )
+
+    @staticmethod
+    def _new_document_metadata(name: str, parent_id: str, now: str) -> Dict[str, Any]:
+        """Return the ``.metadata`` dict for a new cloud document."""
+        return {
+            "createdTime": now,
+            "deleted": False,
+            "lastModified": now,
+            "lastOpened": now,
+            "lastOpenedPage": 0,
+            "metadatamodified": False,
+            "modified": False,
+            "new": False,
+            "parent": parent_id or "",
+            "pinned": False,
+            "source": "",
+            "synced": False,
+            "type": "DocumentType",
+            "version": 1,
+            "visibleName": name,
+        }
 
     @staticmethod
     def _page_layout(content: bytes, ext: str) -> tuple:

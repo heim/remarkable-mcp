@@ -132,13 +132,14 @@ class TestMCPServerInitialization:
 
     @pytest.mark.asyncio
     async def test_tools_count(self):
-        """Cloud default: 7 read/export tools + always-on canvas + 6 write tools.
+        """Cloud default: 7 read/export tools + always-on canvas + 7 write tools.
 
-        ``remarkable_author`` is SSH-only and therefore hidden in cloud mode, so
-        the default cloud surface is 14 tools.
+        ``remarkable_author`` is SSH-only and therefore hidden in cloud mode, and
+        ``remarkable_create_notebook`` is cloud-only, so the default cloud surface
+        is 15 tools.
         """
         tools = await _list_tools()
-        assert len(tools) == 14, f"Expected 14 tools, got {len(tools)}"
+        assert len(tools) == 15, f"Expected 15 tools, got {len(tools)}"
 
     @pytest.mark.asyncio
     async def test_tool_schemas(self):
@@ -1585,7 +1586,7 @@ class TestE2E:
         """Test that server can list all tools (e2e)."""
         tools = await _list_tools()
 
-        assert len(tools) == 14
+        assert len(tools) == 15
 
         # Check each tool has required properties and starts with remarkable_
         for tool in tools:
@@ -8347,3 +8348,136 @@ class TestTypedTextExtraction:
             assert extract_text_from_rm_file(path) == ["Hello world", "Second line"]
         finally:
             path.unlink(missing_ok=True)
+
+
+class TestCloudCreateNotebook:
+    """Cloud-mode notebook creation with typed text."""
+
+    def _cloud_env(self):
+        env = {k: v for k, v in os.environ.items() if k != "REMARKABLE_USE_SSH"}
+        env.pop("REMARKABLE_USE_USB_WEB", None)
+        env.pop("REMARKABLE_READ_ONLY", None)
+        return env
+
+    def _client(self):
+        from remarkable_mcp.sync import RemarkableClient
+
+        client = RemarkableClient(user_token="user-token")
+        client.uploaded = {}
+
+        def put_blob(content, blob_hash, filename, content_type="application/octet-stream"):
+            client.uploaded[filename] = content
+
+        client._put_blob = put_blob
+        client._read_root_entries = Mock(return_value=([], 7))
+        client._commit_root = Mock(return_value=8)
+        return client
+
+    def test_create_notebook_uploads_content_metadata_and_page(self):
+        import io
+
+        from rmscene import read_tree
+
+        client = self._client()
+        doc = client.create_notebook("Notater", "Første linje\nAndre linje", "folder-1")
+
+        files = {name for name in client.uploaded if not name.endswith("docSchema")}
+        page_files = [name for name in files if name.endswith(".rm")]
+        assert files == {
+            f"{doc.id}.content",
+            f"{doc.id}.metadata",
+            page_files[0],
+        }
+        assert page_files[0].startswith(f"{doc.id}/")
+
+        content = json.loads(client.uploaded[f"{doc.id}.content"])
+        assert content["fileType"] == "notebook"
+        page_id = page_files[0][len(doc.id) + 1 : -len(".rm")]
+        assert [p["id"] for p in content["cPages"]["pages"]] == [page_id]
+
+        metadata = json.loads(client.uploaded[f"{doc.id}.metadata"])
+        assert metadata["visibleName"] == "Notater"
+        assert metadata["parent"] == "folder-1"
+        assert metadata["type"] == "DocumentType"
+
+        tree = read_tree(io.BytesIO(client.uploaded[page_files[0]]))
+        text = "".join(v for v in tree.root_text.items.values() if isinstance(v, str))
+        assert text == "Første linje\nAndre linje"
+
+        root = client.uploaded["root.docSchema"].decode("utf-8")
+        assert f":{doc.id}:3:" in root
+        client._commit_root.assert_called_once()
+        assert doc.parent == "folder-1"
+
+    def test_create_notebook_blank(self):
+        client = self._client()
+        doc = client.create_notebook("Tom")
+        metadata = json.loads(client.uploaded[f"{doc.id}.metadata"])
+        assert metadata["parent"] == ""
+        assert any(name.endswith(".rm") for name in client.uploaded)
+
+    @pytest.mark.asyncio
+    async def test_tool_dispatches_to_cloud_client(self):
+        from remarkable_mcp.write_tools import register_write_tools
+
+        with patch.dict(os.environ, self._cloud_env(), clear=True):
+            register_write_tools()
+            folder = Mock()
+            folder.ID = "fold-1"
+            folder.VissibleName = "Work"
+            folder.Parent = ""
+            folder.is_folder = True
+            new_doc = Mock()
+            new_doc.id = "doc-xyz"
+            client = Mock(spec=["get_meta_items", "create_notebook"])
+            client.get_meta_items.return_value = [folder]
+            client.create_notebook.return_value = new_doc
+            with patch("remarkable_mcp.write_tools.get_rmapi", return_value=client):
+                result = await _call_tool(
+                    "remarkable_create_notebook",
+                    {"name": "Møte", "text": "Agenda", "folder": "/Work"},
+                )
+            data = json.loads(result.content[0].text)
+            assert data["created"] is True
+            assert data["transport"] == "cloud"
+            assert data["document_id"] == "doc-xyz"
+            assert data["has_text"] is True
+            client.create_notebook.assert_called_once_with("Møte", "Agenda", "fold-1")
+
+    @pytest.mark.asyncio
+    async def test_tool_reports_missing_folder(self):
+        from remarkable_mcp.write_tools import register_write_tools
+
+        with patch.dict(os.environ, self._cloud_env(), clear=True):
+            register_write_tools()
+            client = Mock(spec=["get_meta_items", "create_notebook"])
+            client.get_meta_items.return_value = []
+            with patch("remarkable_mcp.write_tools.get_rmapi", return_value=client):
+                result = await _call_tool(
+                    "remarkable_create_notebook", {"name": "Møte", "folder": "/Nope"}
+                )
+            data = json.loads(result.content[0].text)
+            assert data["_error"]["type"] == "folder_not_found"
+            client.create_notebook.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tool_only_registered_in_cloud_mode(self):
+        from remarkable_mcp.write_tools import register_write_tools
+
+        mcp._tool_manager._tools.pop("remarkable_create_notebook", None)
+        try:
+            with patch.dict(os.environ, {"REMARKABLE_USE_SSH": "1"}):
+                register_write_tools()
+                names = {t.name for t in await _list_tools()}
+                assert "remarkable_create_notebook" not in names
+                assert "remarkable_author" in names
+
+            env = {**self._cloud_env(), "REMARKABLE_USE_USB_WEB": "1"}
+            with patch.dict(os.environ, env, clear=True):
+                register_write_tools()
+                names = {t.name for t in await _list_tools()}
+                assert "remarkable_create_notebook" not in names
+        finally:
+            mcp._tool_manager._tools.pop("remarkable_author", None)
+            with patch.dict(os.environ, self._cloud_env(), clear=True):
+                register_write_tools()

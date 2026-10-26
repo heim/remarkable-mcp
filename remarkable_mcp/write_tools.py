@@ -935,6 +935,37 @@ def _cloud_mkdir(folder_name: str, parent: str) -> str:
     )
 
 
+def _cloud_create_notebook(name: str, text: Optional[str], folder: str) -> str:
+    """Create a native notebook in the reMarkable cloud, optionally with typed text."""
+    client = get_rmapi()
+    collection = client.get_meta_items()
+    items_by_id = get_items_by_id(collection)
+    parent_id = _resolve_parent_id(folder, items_by_id, collection)
+    if parent_id is None:
+        folders = [get_item_path(i, items_by_id) for i in collection if i.is_folder]
+        return make_error(
+            error_type="folder_not_found",
+            message=f"Folder not found: '{folder}'",
+            suggestion="Use remarkable_browse('/') to see available folders.",
+            did_you_mean=folders[:5] if folders else None,
+        )
+    doc = client.create_notebook(name, text or "", parent_id)
+    _invalidate_client_cache(client)
+    return make_response(
+        {
+            "created": True,
+            "document": name,
+            "document_id": doc.id,
+            "total_pages": 1,
+            "has_text": bool(text),
+            "folder": folder,
+            "transport": "cloud",
+        },
+        f"Created notebook '{name}' in the reMarkable cloud. The typed text can be "
+        "edited on the tablet. Use remarkable_browse() to verify it appears.",
+    )
+
+
 def _cloud_move(document: str, dest_folder: str) -> str:
     """Move a document or folder to another folder in the cloud."""
     client = get_rmapi()
@@ -1565,6 +1596,65 @@ def register_write_tools():
     # transports simply don't see a tool they couldn't use.
     if _is_ssh_mode():
         mcp.tool(annotations=WRITE_ANNOTATIONS)(remarkable_author)
+
+    async def remarkable_create_notebook(
+        name: str,
+        text: Optional[str] = None,
+        folder: str = "/",
+    ) -> str:
+        """
+        <usecase>Create a new native reMarkable notebook in the cloud, blank or with
+        typed text the user can keep editing on the tablet.</usecase>
+        <instructions>
+        Cloud-mode counterpart to remarkable_author(method="create_document"),
+        which needs SSH. The notebook gets one page; `text` becomes typed
+        paragraphs on that page (split on newlines), editable with the tablet's
+        keyboard. Unlike remarkable_markdown_to_pdf, the result is not a PDF.
+
+        Leave `text` EMPTY for a blank notebook. Only pass `text` when the user
+        EXPLICITLY asks for specific typed content; never invent a title,
+        placeholder, or "created by" line. Text is plain: Markdown markup is not
+        rendered and appears as typed.
+
+        Requires write mode (the default; disabled with --read-only).
+        </instructions>
+        <parameters>
+        - name: Title of the new notebook.
+        - text: Optional typed text for the first page. Paragraphs split on newlines.
+        - folder: Destination folder path (default: root "/").
+        </parameters>
+        <examples>
+        - remarkable_create_notebook("Sketches")
+        - remarkable_create_notebook("Meeting notes", text="Agenda\nFollow-ups",
+            folder="/Work")  # only when the user supplied that text
+        </examples>
+        """
+        if not name:
+            return make_error(
+                error_type="missing_parameter",
+                message="remarkable_create_notebook requires 'name'.",
+                suggestion='Call remarkable_create_notebook(name="My notes").',
+            )
+
+        def _impl() -> str:
+            error = _require_write_transport()
+            if error:
+                return error
+            try:
+                return _cloud_create_notebook(name, text, folder or "/")
+            except Exception as e:
+                return make_error(
+                    error_type="create_failed",
+                    message=f"Failed to create notebook: {e}",
+                    suggestion="Check the connection with remarkable_status() and try again.",
+                )
+
+        return await asyncio.to_thread(_impl)
+
+    # SSH mode already offers this through remarkable_author(method=
+    # "create_document"); the cloud tool fills the gap where that is hidden.
+    if _is_cloud_mode():
+        mcp.tool(annotations=WRITE_ANNOTATIONS)(remarkable_create_notebook)
 
     @mcp.tool(annotations=UPLOAD_ANNOTATIONS)
     async def remarkable_upload(
