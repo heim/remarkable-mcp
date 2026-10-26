@@ -1078,17 +1078,18 @@ class RemarkableClient:
     def create_notebook(self, name: str, text: str = "", parent_id: str = "") -> Document:
         """Create a native notebook in the cloud and return it.
 
-        The notebook has one page, blank or seeded with typed text (paragraphs
-        split on newlines), built by the same helpers as the SSH
-        ``create_document`` path. Uploads ``.content``, ``.metadata`` and the
-        page's ``.rm`` blob, then adds the document to the root index.
+        The notebook has one page, blank or seeded with typed text. ``text`` is
+        Markdown: headings, bullets and checkboxes become the tablet's native
+        paragraph styles (see :func:`notebooks.markdown_paragraphs`). Uploads
+        ``.content``, ``.metadata`` and the page's ``.rm`` blob, then adds the
+        document to the root index.
         """
         from remarkable_mcp import notebooks as nb
 
         doc_id = str(uuid.uuid4())
         page_id = str(uuid.uuid4())
         author_uuid = str(uuid.uuid4())
-        page_bytes = nb.page_rm_bytes(text or "", author_uuid=author_uuid)
+        page_bytes = nb.markdown_page_rm_bytes(text or "", author_uuid=author_uuid)
         content_json = nb.new_notebook_content([page_id], author_uuid)
         metadata = self._new_document_metadata(name, parent_id, self._now_ms())
 

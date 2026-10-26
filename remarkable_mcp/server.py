@@ -245,7 +245,7 @@ and sync to all your devices:
 - `remarkable_rename(document, new_name)` - Rename a document/folder
 - `remarkable_delete(document)` - Delete a document/folder (destructive)
 - `remarkable_create_notebook(name, text, folder)` - Create a native notebook,
-  optionally with typed text that stays editable on the tablet
+  optionally with Markdown as typed text that stays editable on the tablet
 
 ### Safety
 - **Delete is destructive** — the MCP client should confirm with the user first

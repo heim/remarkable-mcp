@@ -8481,3 +8481,59 @@ class TestCloudCreateNotebook:
             mcp._tool_manager._tools.pop("remarkable_author", None)
             with patch.dict(os.environ, self._cloud_env(), clear=True):
                 register_write_tools()
+
+
+class TestMarkdownNotebookPage:
+    """Markdown to native paragraph styles on a typed-text page."""
+
+    def test_block_markup_maps_to_paragraph_styles(self):
+        from rmscene.scene_items import ParagraphStyle as PS
+
+        from remarkable_mcp.notebooks import markdown_paragraphs
+
+        md = (
+            "# Tittel\n\nTekst med **fet** og [lenke](https://x.no).\n\n"
+            "## Under\n- En\n  - To\n- [ ] Åpen\n- [x] Ferdig\n"
+            "```\n# ikke overskrift\n```\n1. Nummer\n\n\n"
+        )
+        assert markdown_paragraphs(md) == [
+            ("Tittel", PS.HEADING),
+            ("Tekst med fet og lenke (https://x.no).", PS.PLAIN),
+            ("Under", PS.BOLD),
+            ("En", PS.BULLET),
+            ("To", PS.BULLET2),
+            ("Åpen", PS.CHECKBOX),
+            ("Ferdig", PS.CHECKBOX_CHECKED),
+            ("# ikke overskrift", PS.PLAIN),
+            ("1. Nummer", PS.PLAIN),
+        ]
+
+    def test_page_carries_styles_per_paragraph(self):
+        import io
+
+        from rmscene import read_tree
+        from rmscene.scene_items import ParagraphStyle as PS
+        from rmscene.text import TextDocument
+
+        from remarkable_mcp.notebooks import markdown_page_rm_bytes
+
+        page = markdown_page_rm_bytes("# Møte\nAgenda\n- Punkt\n- [ ] Gjøre")
+        tree = read_tree(io.BytesIO(page))
+        doc = TextDocument.from_scene_item(tree.root_text)
+        assert [(str(p), p.style.value) for p in doc.contents] == [
+            ("Møte", PS.HEADING),
+            ("Agenda", PS.PLAIN),
+            ("Punkt", PS.BULLET),
+            ("Gjøre", PS.CHECKBOX),
+        ]
+
+    def test_blank_page_has_no_text(self):
+        import io
+
+        from rmscene import read_tree
+
+        from remarkable_mcp.notebooks import markdown_page_rm_bytes
+
+        tree = read_tree(io.BytesIO(markdown_page_rm_bytes("")))
+        text = "".join(v for v in tree.root_text.items.values() if isinstance(v, str))
+        assert text == ""

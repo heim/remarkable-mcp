@@ -674,7 +674,7 @@ Or set the environment variable:
 | `remarkable_delete(document, defer_restart, permanent)` | Move a document/folder to Trash; SSH can permanently remove it with `permanent=True` |
 | `remarkable_refresh()` | Safely restart `xochitl` once to apply pending writes made with `defer_restart=True`; no-op after this process has confirmed a clean state — **SSH only** |
 | `remarkable_author(method, ..., defer_restart)` | Author native ink and notebooks — `draw` (append strokes), `add_page` (append a blank notebook page), `create_document` (new notebook) — **SSH only** |
-| `remarkable_create_notebook(name, text, folder)` | Create a native notebook, optionally with typed text that stays editable on the tablet — **cloud only** (SSH uses `remarkable_author(method="create_document")`) |
+| `remarkable_create_notebook(name, text, folder)` | Create a native notebook, optionally with Markdown as typed text (headings, bullets and checkboxes become native paragraph styles) that stays editable on the tablet — **cloud only** (SSH uses `remarkable_author(method="create_document")`) |
 
 ### Safety
 

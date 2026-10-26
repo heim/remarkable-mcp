@@ -1608,25 +1608,31 @@ def register_write_tools():
         <instructions>
         Cloud-mode counterpart to remarkable_author(method="create_document"),
         which needs SSH. The notebook gets one page; `text` becomes typed
-        paragraphs on that page (split on newlines), editable with the tablet's
-        keyboard. Unlike remarkable_markdown_to_pdf, the result is not a PDF.
+        paragraphs on that page, editable with the tablet's keyboard. Unlike
+        remarkable_markdown_to_pdf, the result is not a PDF.
+
+        `text` is Markdown, one paragraph per line. Block markup becomes the
+        tablet's native paragraph styles: "# " heading, "## " and deeper a bold
+        subheading, "- " bullet (indent two spaces for the second level),
+        "- [ ] " / "- [x] " checkbox. Everything else is plain text. Inline
+        markup has no native counterpart yet: **bold** and `code` markers are
+        removed, and [links](url) become "links (url)".
 
         Leave `text` EMPTY for a blank notebook. Only pass `text` when the user
         EXPLICITLY asks for specific typed content; never invent a title,
-        placeholder, or "created by" line. Text is plain: Markdown markup is not
-        rendered and appears as typed.
+        placeholder, or "created by" line.
 
         Requires write mode (the default; disabled with --read-only).
         </instructions>
         <parameters>
         - name: Title of the new notebook.
-        - text: Optional typed text for the first page. Paragraphs split on newlines.
+        - text: Optional Markdown for the first page, one paragraph per line.
         - folder: Destination folder path (default: root "/").
         </parameters>
         <examples>
         - remarkable_create_notebook("Sketches")
-        - remarkable_create_notebook("Meeting notes", text="Agenda\nFollow-ups",
-            folder="/Work")  # only when the user supplied that text
+        - remarkable_create_notebook("Meeting notes",
+            text="# Agenda\n- Budget\n- [ ] Send minutes", folder="/Work")
         </examples>
         """
         if not name:

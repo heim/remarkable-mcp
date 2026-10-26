@@ -19,11 +19,15 @@ writes at the default paper size (see :data:`DEFAULT_PAPER`).
 from __future__ import annotations
 
 import io
+import re
 import time
 import uuid as _uuid
 from typing import Optional
 
-from rmscene import simple_text_document, write_blocks
+from rmscene import RootTextBlock, simple_text_document, write_blocks
+from rmscene.crdt_sequence import CrdtId
+from rmscene.scene_items import ParagraphStyle
+from rmscene.tagged_block_common import LwwValue
 
 from remarkable_mcp.strokes import WRITE_VERSION
 
@@ -60,6 +64,112 @@ def page_rm_bytes(text: str = "", author_uuid: Optional[str] = None) -> bytes:
     """
     au = _author_uuid(author_uuid)
     blocks = list(simple_text_document(text, author_uuid=au))
+    buf = io.BytesIO()
+    write_blocks(buf, blocks, options={"version": WRITE_VERSION})
+    return buf.getvalue()
+
+
+# Markdown block markers mapped to the tablet's native paragraph styles. The
+# tablet has one heading level, so "#" is Heading and deeper levels use the
+# Bold paragraph style.
+_CHECKBOX_RE = re.compile(r"^\s*[-*+]\s+\[([ xX])\]\s+(.*)$")
+_BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+_EMPHASIS_RE = re.compile(r"(\*\*|__)(.+?)\1")
+
+
+def _strip_inline_markdown(line: str) -> str:
+    """Drop inline markup the tablet cannot show as paragraph styles."""
+    line = _LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2)})", line)
+    line = _EMPHASIS_RE.sub(lambda m: m.group(2), line)
+    return line.replace("`", "")
+
+
+def markdown_paragraphs(markdown: str) -> list[tuple[str, ParagraphStyle]]:
+    """Split Markdown into ``(text, style)`` paragraphs for a typed-text page.
+
+    Supports the block markup that has a native counterpart on the tablet:
+    headings, bullets (two levels, by indentation), and checkboxes. Code fences
+    are dropped and their lines kept as plain text. Runs of blank lines collapse
+    to one, and blank lines next to a heading are dropped, since the heading
+    style already has its own spacing.
+    """
+    paragraphs: list[tuple[str, ParagraphStyle]] = []
+    in_fence = False
+    for raw in markdown.replace("\r\n", "\n").split("\n"):
+        if _FENCE_RE.match(raw):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            paragraphs.append((raw, ParagraphStyle.PLAIN))
+            continue
+
+        if not raw.strip():
+            if (
+                paragraphs
+                and paragraphs[-1][0]
+                and paragraphs[-1][1]
+                not in (
+                    ParagraphStyle.HEADING,
+                    ParagraphStyle.BOLD,
+                )
+            ):
+                paragraphs.append(("", ParagraphStyle.PLAIN))
+            continue
+
+        if m := _HEADING_RE.match(raw):
+            style = ParagraphStyle.HEADING if len(m.group(1)) == 1 else ParagraphStyle.BOLD
+            text = m.group(2)
+            if paragraphs and not paragraphs[-1][0]:
+                paragraphs.pop()
+        elif m := _CHECKBOX_RE.match(raw):
+            checked = m.group(1) in "xX"
+            style = ParagraphStyle.CHECKBOX_CHECKED if checked else ParagraphStyle.CHECKBOX
+            text = m.group(2)
+        elif m := _BULLET_RE.match(raw):
+            nested = len(m.group(1).expandtabs(4)) >= 2
+            style = ParagraphStyle.BULLET2 if nested else ParagraphStyle.BULLET
+            text = m.group(2)
+        else:
+            style = ParagraphStyle.PLAIN
+            text = raw.strip()
+        paragraphs.append((_strip_inline_markdown(text), style))
+
+    while paragraphs and not paragraphs[-1][0]:
+        paragraphs.pop()
+    return paragraphs
+
+
+def markdown_page_rm_bytes(markdown: str, author_uuid: Optional[str] = None) -> bytes:
+    """Return ``.rm`` bytes for a page with Markdown rendered as styled typed text.
+
+    Builds the page like :func:`page_rm_bytes` and then sets each paragraph's
+    native style. In the root text block, paragraph styles are keyed by the id
+    of the newline that starts the paragraph (the first paragraph by the end
+    marker ``0:0``). ``simple_text_document`` stores the text as one item with
+    id ``1:16``, so character ``i`` has id ``1:16+i``.
+    """
+    paragraphs = markdown_paragraphs(markdown)
+    text = "\n".join(p for p, _ in paragraphs)
+    au = _author_uuid(author_uuid)
+    blocks = list(simple_text_document(text, author_uuid=au))
+
+    root = next(b for b in blocks if isinstance(b, RootTextBlock))
+    first_item = root.value.items.sequence_items()[0]
+    base = first_item.item_id
+    stamp = CrdtId(1, 15)
+    styles = {CrdtId(0, 0): LwwValue(timestamp=stamp, value=paragraphs[0][1])} if paragraphs else {}
+    offset = 0
+    for i, (para, style) in enumerate(paragraphs):
+        if i > 0:
+            newline_id = CrdtId(base.part1, base.part2 + offset - 1)
+            styles[newline_id] = LwwValue(timestamp=stamp, value=style)
+        offset += len(para) + 1
+    if styles:
+        root.value.styles = styles
+
     buf = io.BytesIO()
     write_blocks(buf, blocks, options={"version": WRITE_VERSION})
     return buf.getvalue()
